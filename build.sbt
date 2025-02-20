@@ -16,6 +16,9 @@ val storePG = (project in file("store-pg")).
 val soqlServerPG = (project in file("soql-server-pg")).
   dependsOn(commonPG, storePG % "test->test")
 
+val redshiftBackend = (project in file("redshift-backend")).
+  dependsOn(commonPG, storePG % "test->test")
+
 disablePlugins(AssemblyPlugin)
 
 releaseProcess -= ReleaseTransformations.publishArtifacts
