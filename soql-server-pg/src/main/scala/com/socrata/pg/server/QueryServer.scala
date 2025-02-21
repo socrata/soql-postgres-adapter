@@ -91,6 +91,7 @@ class QueryServer(val dsInfo: DSInfo, val caseSensitivity: CaseSensitivity, val 
   private val routerSet = locally {
     Routes(
       Route("/schema", SchemaResource),
+      Route("/exists", ExistsResource),
       Route("/rollups", RollupResource),
       Route("/query", QueryResource),
       Route("/version", VersionResource),
@@ -116,60 +117,79 @@ class QueryServer(val dsInfo: DSInfo, val caseSensitivity: CaseSensitivity, val 
 
   object SchemaResource extends SimpleResource {
     override val get = schema _
-  }
+    def schema(req: HttpRequest): HttpResponse = {
+      val servReq = req.servletRequest
+      val copy = Option(servReq.getParameter("copy"))
+      val withFieldName = Option(servReq.getParameter("fieldName")).map(java.lang.Boolean.parseBoolean(_)).getOrElse(false)
 
-  def schema(req: HttpRequest): HttpResponse = {
-    val servReq = req.servletRequest
-    val copy = Option(servReq.getParameter("copy"))
-    val withFieldName = Option(servReq.getParameter("fieldName")).map(java.lang.Boolean.parseBoolean(_)).getOrElse(false)
+      withPgu(dsInfo, truthStoreDatasetInfo = None) { pgu =>
+        // get schema by dataset id or resource name
+        val copyInfoOpt = Option(servReq.getParameter("ds")) match {
+          case Some(ds) =>
+            getCopy(pgu, ds, copy)
+          case None => Option(servReq.getParameter("rn")) match {
+            case Some(rn) =>
+              getCopy(pgu, DatasetResourceName(rn), copy)
+            case None =>
+              None
+          }
+        }
 
-    withPgu(dsInfo, truthStoreDatasetInfo = None) { pgu =>
-      // get schema by dataset id or resource name
-      val copyInfoOpt = Option(servReq.getParameter("ds")) match {
-        case Some(ds) =>
-          getCopy(pgu, ds, copy)
-        case None => Option(servReq.getParameter("rn")) match {
-          case Some(rn) =>
-            getCopy(pgu, DatasetResourceName(rn), copy)
-          case None =>
-            None
+        copyInfoOpt match {
+          case Some(copyInfo) =>
+            if (withFieldName) {
+              import com.socrata.pg.ExtendedSchema._
+              val schema =  getSchemaWithFieldName(pgu, copyInfo)
+              OK ~>
+              copyInfoHeaderForSchema(copyInfo.copyNumber, copyInfo.dataVersion, copyInfo.lastModified) ~>
+              Write(JsonContentType)(JsonUtil.writeJson(_, schema, buffer = true))
+            } else {
+              import com.socrata.pg.Schema._
+              val schema =  getSchema(pgu, copyInfo)
+              OK ~>
+              copyInfoHeaderForSchema(copyInfo.copyNumber, copyInfo.dataVersion, copyInfo.lastModified) ~>
+              Write(JsonContentType)(JsonUtil.writeJson(_, schema, buffer = true))
+            }
+          case None => NotFound
         }
       }
+    }
+  }
 
-      copyInfoOpt match {
-        case Some(copyInfo) =>
-          if (withFieldName) {
-            import com.socrata.pg.ExtendedSchema._
-            val schema =  getSchemaWithFieldName(pgu, copyInfo)
-            OK ~>
-              copyInfoHeaderForSchema(copyInfo.copyNumber, copyInfo.dataVersion, copyInfo.lastModified) ~>
-              Write(JsonContentType)(JsonUtil.writeJson(_, schema, buffer = true))
-          } else {
-            import com.socrata.pg.Schema._
-            val schema =  getSchema(pgu, copyInfo)
-            OK ~>
-              copyInfoHeaderForSchema(copyInfo.copyNumber, copyInfo.dataVersion, copyInfo.lastModified) ~>
-              Write(JsonContentType)(JsonUtil.writeJson(_, schema, buffer = true))
-          }
-        case None => NotFound
+  object ExistsResource extends SimpleResource {
+    override val get = exists _
+    def exists(req: HttpRequest): HttpResponse = {
+      val servReq = req.servletRequest
+
+      val ds = Option(servReq.getParameter("ds")).getOrElse(throw new IllegalArgumentException("Existence Checking requires the dataset parameter"))
+      val copy = Option(servReq.getParameter("copy"))
+
+
+      withPgu(dsInfo, truthStoreDatasetInfo = None) { pgu =>
+        val copyInfoOpt = getCopy(pgu, ds, copy)
+
+
+        copyInfoOpt match {
+          case Some(copyInfo) => OK
+          case None => NotFound
+        }
       }
     }
   }
 
   object RollupResource extends SimpleResource {
     override val get = rollups _
-  }
-
-  def rollups(req: HttpRequest): HttpResponse = {
-    val servReq = req.servletRequest
-    val dsOrRn = Option(servReq.getParameter("ds")).toLeft(servReq.getParameter("rn"))
-    val copy = Option(servReq.getParameter("copy"))
-    val includeUnmaterialized = java.lang.Boolean.parseBoolean(servReq.getParameter("include_unmaterialized"))
-    getRollups(dsOrRn, copy, includeUnmaterialized) match {
-      case Some(rollups) =>
-        OK ~> Write(JsonContentType)(JsonUtil.writeJson(_, rollups.map(r => r.unanchored).toSeq, buffer = true))
-      case None =>
-        NotFound
+    def rollups(req: HttpRequest): HttpResponse = {
+      val servReq = req.servletRequest
+      val dsOrRn = Option(servReq.getParameter("ds")).toLeft(servReq.getParameter("rn"))
+      val copy = Option(servReq.getParameter("copy"))
+      val includeUnmaterialized = java.lang.Boolean.parseBoolean(servReq.getParameter("include_unmaterialized"))
+      getRollups(dsOrRn, copy, includeUnmaterialized) match {
+        case Some(rollups) =>
+          OK ~> Write(JsonContentType)(JsonUtil.writeJson(_, rollups.map(r => r.unanchored).toSeq, buffer = true))
+        case None =>
+          NotFound
+      }
     }
   }
 
